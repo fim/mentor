@@ -1,0 +1,234 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import argparse
+import glob
+import time
+from tempfile import NamedTemporaryFile as namedtmp
+from mimetypes import MimeTypes
+
+from gevent import socket
+from gevent.pywsgi import WSGIServer
+
+index = []
+
+# SSL stuff
+###########
+
+def create_sscert(common_name):
+    """
+    create self signed certificate
+    """
+
+    try:
+        import random
+        import M2Crypto
+    except (ImportError, e):
+        sys.stderr.write("You need M2Crypto if you want SSL support")
+        raise e
+
+    pk = M2Crypto.EVP.PKey()
+    cert_req = M2Crypto.X509.Request()
+    rsa = M2Crypto.RSA.gen_key(1024, 65537, lambda: None)
+    pk.assign_rsa(rsa)
+    cert_req.set_pubkey(pk)
+    name = cert_req.get_subject()
+    name.C = "US"
+    name.CN = common_name
+    name.ST = 'CA'
+    name.O = 'yelp'
+    name.OU = 'testing'
+    cert_req.sign(pk,'sha1')
+
+    cert = M2Crypto.X509.X509()
+    cert.set_serial_number(random.randint(1,9999999))
+    cert.set_version(2)
+    t = long(time.time())
+    now = M2Crypto.ASN1.ASN1_UTCTIME()
+    now.set_time(t)
+    expire = M2Crypto.ASN1.ASN1_UTCTIME()
+    expire.set_time(t + 365 * 24 * 60 * 60)
+    cert.set_not_before(now)
+    cert.set_not_after(expire)
+    cert.add_ext(M2Crypto.X509.new_extension('nsComment', 'SSL sever'))
+    cert.set_subject(cert_req.get_subject())
+    cert.set_pubkey(cert_req.get_pubkey())
+
+    cert.set_issuer(cert.get_subject())
+    cert.sign(pk, 'sha1')
+
+    cert.save_pem('server.crt')
+    pk.save_key('server.key', None)
+
+# UPNP / STUN
+#############
+
+def upnp_setup(port):
+    """
+    Port forward from public ip
+    """
+    try:
+        import miniupnpc
+    except (ImportError, e):
+        sys.stderr.write("You need miniupnpc if you want UPnP support")
+        raise e
+
+    u = miniupnpc.UPnP()
+    u.discover()
+    u.selectigd()
+    pf = u.getspecificportmapping(port, 'TCP')
+    if pf and pf[0] == u.lanaddr:
+        print "Port %s is already forwarded to %s" % (port, u.lanaddr)
+    else:
+        u.addportmapping(port, 'TCP', u.lanaddr, port,
+            'mentor forwarding %u' % port, '')
+    return (u.lanaddr, u.externalipaddress())
+
+def upnp_teardown(port):
+    """
+    Remove port forwarding
+    """
+    try:
+        import miniupnpc
+    except (ImportError, e):
+        sys.stderr.write("You need miniupnpc if you want UPnP support")
+        raise e
+
+    u = miniupnpc.UPnP()
+    u.discover()
+    u.selectigd()
+    pf = u.getspecificportmapping(port, 'TCP')
+    if pf:
+        u.deleteportmapping(port, 'TCP')
+
+# Paths and requests
+####################
+def expand_paths(paths, recurse=False):
+    """
+    expand a list of directories and files using globing to a flat list
+    """
+    global index
+    for p in paths:
+        if os.path.exists(p):
+            if os.path.isdir(p):
+                if not recurse:
+                    index.extend(filter(lambda f: os.path.isfile(f),
+                        glob.glob("{}/*".format(p))))
+                else:
+                    for r, d, f in os.walk(p):
+                        index.extend(['{}{}{}'.format(r, os.sep, fl) for fl in f])
+
+            else:
+                index.append(os.path.expanduser(p))
+
+    index = map(lambda f: os.path.relpath(f, os.getcwd()), index)
+
+    return index
+
+def serve_files(env, start_response):
+    if env['PATH_INFO'] == '/':
+        start_response('200 OK', [('Content-Type', 'text/html')])
+        yield '<br />'.join(["{0} <a href=\"{0}\">[GET]</a>".format(f) for f in
+            index ])
+    else:
+        rfile = env['PATH_INFO'][1:]
+        if rfile in index:
+            mtype = MimeTypes().guess_type(rfile)
+            start_response('200 OK', [('Content-Type', mtype[0])])
+            with open(rfile, 'rb') as fd:
+                for chunk in iter((lambda:fd.read(4096)), ''):
+                    yield chunk
+        else:
+            start_response('404 Not Found', [('Content-Type', 'text/html')])
+            yield '<h1>{} not Found</h1>'.format(rfile)
+
+__selfpath__ = os.path.abspath(os.path.dirname(__file__))
+sys.path.append(__selfpath__ + "/modules")
+
+# This block ensures that ^C interrupts are handled quietly.
+try:
+    import signal
+
+    def exithandler(signum,frame):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        sys.exit(1)
+
+    signal.signal(signal.SIGINT, exithandler)
+    signal.signal(signal.SIGTERM, exithandler)
+    if hasattr(signal, 'SIGPIPE'):
+        signal.signal(signal.SIGPIPE, signal.SIG_DFL)
+
+except KeyboardInterrupt:
+        sys.exit(1)
+
+def main(argv):
+    parser = argparse.ArgumentParser(
+        description = "Fileshare tool")
+    parser.add_argument("-t", "--traceback", action="store_true",
+        default=False, help="print traceback on exceptions [default: False]")
+    parser.add_argument("-q", "--quiet", action="store_true",
+        default=False, help="quiet output [default: False]")
+    parser.add_argument("-v", "--verbose", action="store_true",
+        default=False, help="verbose output [default: False]")
+    parser.add_argument("-r", "--recursive", action="store_true",
+        default=False, help="recursive sharing of directories [default: False]")
+    parser.add_argument("-u", "--upnp", action="store_true",
+        default=False, help="Enable port forwarding via UPnP [default: False]")
+    parser.add_argument("-p", "--port", type=int,
+        default=61234, help="listening port [default: 61234]")
+    parser.add_argument("-b", "--bind",
+        default=None, help="bind address [default: Auto]")
+    parser.add_argument("-s", "--secure", action="store_true",
+        default=False, help="enable https [default: false]")
+    parser.add_argument("--disable-colors", action="store_true", dest="color_disable",
+        default=(os.name == 'nt' or not sys.stdout.isatty()),
+        help="disable colors in the output of commands"
+    )
+    parser.add_argument("files", nargs="*",
+            default=".", help="List of files/directories to serve [Default: \".\"]"
+    )
+
+    args, subargs = parser.parse_known_args(argv)
+
+    if args.bind and args.upnp:
+        sys.stderr.write("Can't use both -u/--upnp and -b/--bind flags")
+        sys.exit(1)
+
+    expand_paths(args.files, args.recursive)
+
+    if args.upnp:
+        laddr, raddr = upnp_setup(args.port)
+    else:
+        laddr = raddr = args.bind or '0.0.0.0'
+
+    try:
+        print "Listening on {}://{}:{}".format(
+            "https" if args.secure else "http",
+            raddr, args.port)
+
+        if args.secure:
+            create_sscert("{}:{}".format(raddr, args.port))
+            WSGIServer((laddr, args.port), serve_files,
+                    keyfile='server.key', certfile='server.crt').serve_forever()
+        else:
+            WSGIServer((laddr, args.port), serve_files).serve_forever()
+    except SystemExit:
+        if args.upnp:
+            upnp_teardown(args.port)
+        if args.secure:
+            for f in ['server.key', 'server.crt']:
+                if os.path.exists(f): os.remove(f)
+        sys.exit()
+    except:
+        import traceback
+        if args.traceback:
+            traceback.print_exc()
+        else:
+            formatted_lines = traceback.format_exc().splitlines()
+            print(formatted_lines[-1])
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
