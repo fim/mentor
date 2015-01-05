@@ -25,8 +25,8 @@ def create_sscert(common_name):
     try:
         import random
         import M2Crypto
-    except (ImportError, e):
-        sys.stderr.write("You need M2Crypto if you want SSL support")
+    except ImportError, e:
+        sys.stderr.write("You need M2Crypto if you want SSL support\n")
         raise e
 
     pk = M2Crypto.EVP.PKey()
@@ -71,8 +71,8 @@ def upnp_setup(port):
     """
     try:
         import miniupnpc
-    except (ImportError, e):
-        sys.stderr.write("You need miniupnpc if you want UPnP support")
+    except ImportError, e:
+        sys.stderr.write("You need miniupnpc if you want UPnP support\n")
         raise e
 
     u = miniupnpc.UPnP()
@@ -202,14 +202,15 @@ def main(argv):
         sys.stderr.write("Can't use both -u/--upnp and -b/--bind flags")
         sys.exit(1)
 
-    expand_paths(args.files, args.recursive)
-
-    if args.upnp:
-        laddr, raddr = upnp_setup(args.port)
-    else:
-        laddr = raddr = args.bind or '0.0.0.0'
-
     try:
+
+        expand_paths(args.files, args.recursive)
+
+        if args.upnp:
+            laddr, raddr = upnp_setup(args.port)
+        else:
+            laddr = raddr = args.bind or '0.0.0.0'
+
         print "Listening on {}://{}:{}".format(
             "https" if args.secure else "http",
             raddr, args.port)
