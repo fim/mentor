@@ -7,6 +7,7 @@ import glob
 import time
 from tempfile import NamedTemporaryFile as namedtmp
 from mimetypes import MimeTypes
+import urllib
 
 from gevent import socket
 from gevent.pywsgi import WSGIServer
@@ -104,35 +105,40 @@ def upnp_teardown(port):
 
 # Paths and requests
 ####################
+
 def expand_paths(paths, recurse=False):
     """
     expand a list of directories and files using globing to a flat list
     """
     global index
     for p in paths:
-        if os.path.exists(p):
-            if os.path.isdir(p):
+        np = os.path.abspath(p)
+        if os.path.exists(np):
+            if os.path.isdir(np):
                 if not recurse:
                     index.extend(filter(lambda f: os.path.isfile(f),
-                        glob.glob("{}/*".format(p))))
+                        glob.glob("{}/*".format(np))))
                 else:
-                    for r, d, f in os.walk(p):
+                    for r, d, f in os.walk(np):
                         index.extend(['{}{}{}'.format(r, os.sep, fl) for fl in f])
 
             else:
-                index.append(os.path.expanduser(p))
+                index.append(os.path.expanduser(np))
 
     index = map(lambda f: os.path.relpath(f, os.getcwd()), index)
 
     return index
 
+# Serve files
+#############
+
 def serve_files(env, start_response):
     if env['PATH_INFO'] == '/':
         start_response('200 OK', [('Content-Type', 'text/html')])
-        yield '<br />'.join(["{0} <a href=\"{0}\">[GET]</a>".format(f) for f in
-            index ])
+        yield '<br />'.join([ "{0} <a href='{1}'>[GET]</a>".format(f,
+            urllib.quote_plus(urllib.pathname2url(f))) for f in index ])
     else:
-        rfile = env['PATH_INFO'][1:]
+        rfile = urllib.unquote(env['PATH_INFO'][1:])
         if rfile in index:
             mtype = MimeTypes().guess_type(rfile)
             start_response('200 OK', [('Content-Type', mtype[0])])
