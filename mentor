@@ -5,7 +5,7 @@ import sys
 import argparse
 import glob
 import time
-from tempfile import NamedTemporaryFile as namedtmp
+from tempfile import NamedTemporaryFile as tmpfile
 from mimetypes import MimeTypes
 import urllib
 
@@ -59,8 +59,14 @@ def create_sscert(common_name):
     cert.set_issuer(cert.get_subject())
     cert.sign(pk, 'sha1')
 
-    cert.save_pem('server.crt')
-    pk.save_key('server.key', None)
+    cf = tmpfile()
+    cf.write(cert.as_pem())
+    cf.flush()
+    kf = tmpfile()
+    kf.write(pk.as_pem(None))
+    kf.flush()
+
+    return (kf, cf)
 
 # UPNP / STUN
 #############
@@ -216,17 +222,14 @@ def main(argv):
             raddr, args.port)
 
         if args.secure:
-            create_sscert("{}:{}".format(raddr, args.port))
+            pk, crt = create_sscert("{}:{}".format(raddr, args.port))
             WSGIServer((laddr, args.port), serve_files,
-                    keyfile='server.key', certfile='server.crt').serve_forever()
+                    keyfile=pk.name, certfile=crt.name).serve_forever()
         else:
             WSGIServer((laddr, args.port), serve_files).serve_forever()
     except SystemExit:
         if args.upnp:
             upnp_teardown(args.port)
-        if args.secure:
-            for f in ['server.key', 'server.crt']:
-                if os.path.exists(f): os.remove(f)
         sys.exit()
     except:
         import traceback
