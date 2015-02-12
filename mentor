@@ -23,6 +23,11 @@ from gevent.pywsgi import WSGIServer
 
 index = []
 
+# Hacky way for global conf variables
+ALLOW_UPLOADS=False
+UPLOAD_DIR="/tmp"
+UPLOAD_LIMIT=2
+
 # SSL stuff
 ###########
 
@@ -34,7 +39,7 @@ def create_sscert(common_name):
     try:
         import random
         import M2Crypto
-    except ImportError, e:
+    except (ImportError, e):
         sys.stderr.write("You need M2Crypto if you want SSL support\n")
         raise e
 
@@ -86,7 +91,7 @@ def upnp_setup(port):
     """
     try:
         import miniupnpc
-    except ImportError, e:
+    except (ImportError, e):
         sys.stderr.write("You need miniupnpc if you want UPnP support\n")
         raise e
 
@@ -95,7 +100,7 @@ def upnp_setup(port):
     u.selectigd()
     pf = u.getspecificportmapping(port, 'TCP')
     if pf and pf[0] == u.lanaddr:
-        print "Port %s is already forwarded to %s" % (port, u.lanaddr)
+        print("Port %s is already forwarded to %s" % (port, u.lanaddr))
     else:
         u.addportmapping(port, 'TCP', u.lanaddr, port,
             'mentor forwarding %u' % port, '')
@@ -151,10 +156,37 @@ def serve_files(env, start_response):
     if env['PATH_INFO'] == '/':
         start_response('200 OK', [('Content-Type', 'text/html')])
         yield "<pre>%s</pre>" % sys.modules[__name__].__doc__
+        if ALLOW_UPLOADS:
+            yield "<pre>Mode: <a href='/'>Download</a> | <a href='/upload'>Upload</a></pre>"
+            yield "<pre>%s</pre>" % (40*"#")
         yield "<table> "
         yield '\n'.join([ "<tr><td>{0}</td><td><a href='{1}'>[GET]</a></td></tr>".format(f,
             urllib.quote_plus(urllib.pathname2url(f))) for f in index ])
         yield "</table>"
+    elif env['PATH_INFO'] == '/upload' and ALLOW_UPLOADS:
+        if env['REQUEST_METHOD'] == "POST":
+            if env['CONTENT_LENGTH'] > UPLOAD_LIMIT * 1024 * 1024:
+                start_response('401 OK', [('Content-Type', 'text/html')])
+                yield "File size exceeded the limit of %d MB" % UPLOAD_LIMIT
+                return
+
+            import cgi
+            uploads = cgi.FieldStorage(
+                fp=env['wsgi.input'],
+                environ=env
+            )
+            f = uploads['file']
+            with open("{}/{}".format(UPLOAD_DIR, f.filename), 'wb') as fp:
+                fp.write(f.file.read())
+
+        else:
+            start_response('200 OK', [('Content-Type', 'text/html')])
+            yield "<pre>%s</pre>" % sys.modules[__name__].__doc__
+            yield "<pre>Mode: <a href='/'>Download</a> | <a href='/upload'>Upload</a></pre>"
+            yield "<pre>%s</pre>" % (40*"#")
+            yield '<script src="https://rawgit.com/fim/dropzone/master/dist/dropzone.js"></script>'
+            yield '<link rel="stylesheet" href="https://rawgit.com/fim/dropzone/master/dist/dropzone.css">'
+            yield '<form action="/upload" class="dropzone"></form>'
     else:
         rfile = urllib.unquote(env['PATH_INFO'][1:])
         if rfile in index:
@@ -202,6 +234,12 @@ def main(argv):
         default=False, help="Enable port forwarding via UPnP [default: False]")
     parser.add_argument("-p", "--port", type=int,
         default=61234, help="listening port [default: 61234]")
+    parser.add_argument("-U", "--upload", action="store_true",
+        default=False, help="Enable uploading files [default: False]")
+    parser.add_argument("-d", "--upload-dir", default="/tmp",
+        help="Destination directory for file uploads [default: /tmp")
+    parser.add_argument("-l", "--upload-limit", default=2,
+        help="Limit in MB for file uploads [default: 2MB]")
     parser.add_argument("-b", "--bind",
         default=None, help="bind address [default: Auto]")
     parser.add_argument("-s", "--secure", action="store_true",
@@ -220,8 +258,17 @@ def main(argv):
         sys.stderr.write("Can't use both -u/--upnp and -b/--bind flags")
         sys.exit(1)
 
-    try:
+    if args.upload:
+        global ALLOW_UPLOADS
+        ALLOW_UPLOADS = args.upload
+    if args.upload_limit:
+        global UPLOAD_LIMIT
+        UPLOAD_LIMIT = args.upload_limit
+    if args.upload_dir:
+        global UPLOAD_DIR
+        UPLOAD_DIR = args.upload_dir
 
+    try:
         expand_paths(args.files, args.recursive)
 
         if args.upnp:
@@ -229,9 +276,9 @@ def main(argv):
         else:
             laddr = raddr = args.bind or '0.0.0.0'
 
-        print "Listening on {}://{}:{}".format(
+        print("Listening on {}://{}:{}".format(
             "https" if args.secure else "http",
-            raddr, args.port)
+            raddr, args.port))
 
         if args.secure:
             pk, crt = create_sscert("{}:{}".format(raddr, args.port))
