@@ -165,11 +165,11 @@ def serve_files(env, start_response):
         yield "</table>"
     elif env['PATH_INFO'] == '/upload' and ALLOW_UPLOADS:
         if env['REQUEST_METHOD'] == "POST":
-            if env['CONTENT_LENGTH'] > UPLOAD_LIMIT * 1024 * 1024:
+            if int(env['CONTENT_LENGTH']) > UPLOAD_LIMIT * 1024 * 1024:
                 start_response('401 OK', [('Content-Type', 'text/html')])
                 yield "File size exceeded the limit of %d MB" % UPLOAD_LIMIT
                 return
-
+            start_response('200 OK', [('Content-Type', 'text/html')])
             import cgi
             uploads = cgi.FieldStorage(
                 fp=env['wsgi.input'],
@@ -178,7 +178,6 @@ def serve_files(env, start_response):
             f = uploads['file']
             with open("{}/{}".format(UPLOAD_DIR, f.filename), 'wb') as fp:
                 fp.write(f.file.read())
-
         else:
             start_response('200 OK', [('Content-Type', 'text/html')])
             yield "<pre>%s</pre>" % sys.modules[__name__].__doc__
