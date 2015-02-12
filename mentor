@@ -39,7 +39,7 @@ def create_sscert(common_name):
     try:
         import random
         import M2Crypto
-    except (ImportError, e):
+    except ImportError as e:
         sys.stderr.write("You need M2Crypto if you want SSL support\n")
         raise e
 
@@ -91,7 +91,7 @@ def upnp_setup(port):
     """
     try:
         import miniupnpc
-    except (ImportError, e):
+    except ImportError as e:
         sys.stderr.write("You need miniupnpc if you want UPnP support\n")
         raise e
 
@@ -112,7 +112,7 @@ def upnp_teardown(port):
     """
     try:
         import miniupnpc
-    except (ImportError, e):
+    except ImportError as e:
         sys.stderr.write("You need miniupnpc if you want UPnP support")
         raise e
 
@@ -169,15 +169,19 @@ def serve_files(env, start_response):
                 start_response('401 OK', [('Content-Type', 'text/html')])
                 yield "File size exceeded the limit of %d MB" % UPLOAD_LIMIT
                 return
-            start_response('200 OK', [('Content-Type', 'text/html')])
-            import cgi
-            uploads = cgi.FieldStorage(
-                fp=env['wsgi.input'],
-                environ=env
-            )
-            f = uploads['file']
-            with open("{}/{}".format(UPLOAD_DIR, f.filename), 'wb') as fp:
-                fp.write(f.file.read())
+            try:
+                import cgi
+                uploads = cgi.FieldStorage(
+                    fp=env['wsgi.input'],
+                    environ=env
+                )
+                f = uploads['file']
+                with open("{}/{}".format(UPLOAD_DIR, f.filename), 'wb') as fp:
+                    fp.write(f.file.read())
+                start_response('200 OK', [('Content-Type', 'text/html')])
+            except Exception as e:
+                start_response('500 Internal Server Error', [('Content-Type', 'text/html')])
+                raise e
         else:
             start_response('200 OK', [('Content-Type', 'text/html')])
             yield "<pre>%s</pre>" % sys.modules[__name__].__doc__
