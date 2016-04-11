@@ -194,7 +194,7 @@ def serve_files(env, start_response):
         rfile = urllib.unquote(env['PATH_INFO'][1:])
         if rfile in index:
             mtype = MimeTypes().guess_type(rfile)
-            start_response('200 OK', [('Content-Type', mtype[0])])
+            start_response('200 OK', [('Content-Type', mtype[0] or "application/octet-stream")])
             with open(rfile, 'rb') as fd:
                 for chunk in iter((lambda:fd.read(4096)), ''):
                     yield chunk
